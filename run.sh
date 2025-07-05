@@ -10,4 +10,5 @@ if [ ! -f "$CONFIG_FILE" ]; then
   cp "$TEMPLATE_FILE" "$CONFIG_FILE"
 fi
 
+docker rm rvmt
 docker run --name rvmt -v $SCRIPT_DIR/out/:/app/assets -v $SCRIPT_DIR/.env:/app/.env -v $SCRIPT_DIR/config.toml:/app/config.toml -it rvmt
