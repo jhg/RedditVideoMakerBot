@@ -66,7 +66,6 @@ def run_many(times) -> None:
             f'on the {x}{("th", "st", "nd", "rd", "th", "th", "th", "th", "th", "th")[x % 10]} iteration of {times}'
         )  # correct 1st 2nd 3rd 4th 5th....
         main()
-        Popen("cls" if name == "nt" else "clear", shell=True).wait()
 
 
 def shutdown() -> NoReturn:
@@ -108,7 +107,6 @@ if __name__ == "__main__":
                     f'on the {index}{("st" if index % 10 == 1 else ("nd" if index % 10 == 2 else ("rd" if index % 10 == 3 else "th")))} post of {len(config["reddit"]["thread"]["post_id"].split("+"))}'
                 )
                 main(post_id)
-                Popen("cls" if name == "nt" else "clear", shell=True).wait()
         elif config["settings"]["times_to_run"]:
             run_many(config["settings"]["times_to_run"])
         else:

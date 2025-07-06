@@ -122,9 +122,19 @@ def create_fancy_thumbnail(image, text, text_color, padding, wrap=35):
     draw = ImageDraw.Draw(image)
 
     username_font = ImageFont.truetype(os.path.join("fonts", "Roboto-Bold.ttf"), 30)
+    
+    # Fix channel_name configuration extraction
+    channel_name_config = settings.config["settings"]["channel_name"]
+    if isinstance(channel_name_config, dict):
+        # Extract the default value from the configuration dictionary
+        text = channel_name_config.get("default", "Reddit Tales")
+    else:
+        # If it's already a string or convert it to string
+        text = str(channel_name_config) if channel_name_config else "Reddit Tales"
+    
     draw.text(
         (205, 825),
-        settings.config["settings"]["channel_name"],
+        text,
         font=username_font,
         fill=text_color,
         align="left",
