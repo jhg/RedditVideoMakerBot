@@ -1,5 +1,6 @@
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Tuple
 
@@ -149,17 +150,50 @@ class TTSEngine:
             filepath=f"{self.path}/{filename}.mp3",
             random_voice=settings.config["settings"]["tts"]["random_voice"],
         )
-        # try:
-        #     self.length += MP3(f"{self.path}/{filename}.mp3").info.length
-        # except (MutagenError, HeaderNotFoundError):
-        #     self.length += sox.file_info.duration(f"{self.path}/{filename}.mp3")
+        
+        # Método más robusto para calcular duración del audio
+        clip_duration = 0
+        audio_file_path = f"{self.path}/{filename}.mp3"
+        
+        # Método 1: Usar FFprobe para obtener duración (más confiable)
         try:
-            clip = AudioFileClip(f"{self.path}/{filename}.mp3")
-            self.last_clip_length = clip.duration
-            self.length += clip.duration
-            clip.close()
-        except:
-            self.length = 0
+            result = subprocess.run([
+                'ffprobe', '-v', 'error', '-show_entries', 'format=duration', 
+                '-of', 'default=noprint_wrappers=1:nokey=1', audio_file_path
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            
+            clip_duration = float(result.stdout.strip())
+            print(f"[DEBUG] FFprobe detected duration for {filename}: {clip_duration}s")
+            
+        except (subprocess.CalledProcessError, ValueError, FileNotFoundError) as e:
+            print(f"[WARNING] FFprobe failed for {filename}: {e}")
+            
+            # Método 2: Fallback a MoviePy
+            try:
+                clip = AudioFileClip(audio_file_path)
+                clip_duration = clip.duration
+                clip.close()
+                print(f"[DEBUG] MoviePy detected duration for {filename}: {clip_duration}s")
+                
+            except Exception as moviepy_error:
+                print(f"[ERROR] Both FFprobe and MoviePy failed for {filename}: {moviepy_error}")
+                
+                # Método 3: Fallback final - usar duración estimada basada en texto
+                # Aproximadamente 150 palabras por minuto de lectura
+                word_count = len(text.split())
+                estimated_duration = (word_count / 150) * 60  # convertir a segundos
+                clip_duration = max(1, estimated_duration)  # mínimo 1 segundo
+                print(f"[WARNING] Using estimated duration for {filename}: {clip_duration}s (based on {word_count} words)")
+        
+        # Actualizar duraciones solo si obtuvimos una duración válida
+        if clip_duration > 0:
+            self.last_clip_length = clip_duration
+            self.length += clip_duration
+            print(f"[DEBUG] Updated total length: {self.length}s (added {clip_duration}s)")
+        else:
+            print(f"[ERROR] Could not determine duration for {filename}, skipping duration update")
+            # NO resetear self.length a 0, solo no agregar nada
+            self.last_clip_length = 0
 
     def create_silence_mp3(self):
         silence_duration = settings.config["settings"]["tts"]["silence_duration"]

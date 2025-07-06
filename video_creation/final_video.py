@@ -185,6 +185,36 @@ def merge_background_audio(audio: ffmpeg, reddit_id: str):
         return merged_audio  # Return merged audio
 
 
+def safe_get_audio_duration(file_path: str, fallback_duration: float = 1.0) -> float:
+    """Safely get audio duration with fallback if file doesn't exist or can't be probed"""
+    if not exists(file_path):
+        print_substep(f"Audio file {file_path} does not exist, using fallback duration: {fallback_duration}s")
+        return fallback_duration
+    
+    try:
+        duration = float(ffmpeg.probe(file_path)["format"]["duration"])
+        return duration
+    except Exception as e:
+        print_substep(f"Failed to probe {file_path}: {e}, using fallback duration: {fallback_duration}s")
+        return fallback_duration
+
+
+def create_silent_audio(output_path: str, duration: float, sample_rate: int = 44100) -> bool:
+    """Create a silent audio file as fallback when TTS fails"""
+    try:
+        (
+            ffmpeg
+            .input('anullsrc=channel_layout=stereo:sample_rate=44100', f='lavfi', t=duration)
+            .output(output_path, acodec='mp3', ar=sample_rate)
+            .overwrite_output()
+            .run(quiet=True)
+        )
+        return True
+    except Exception as e:
+        print_substep(f"Failed to create silent audio: {e}")
+        return False
+
+
 def make_final_video(
     number_of_clips: int,
     length: int,
@@ -222,35 +252,73 @@ def make_final_video(
             "No audio clips to gather. Please use a different TTS or post."
         )  # This is to fix the TypeError: unsupported operand type(s) for +: 'int' and 'NoneType'
         exit()
+    
+    # Create missing audio files as fallbacks if they don't exist
     if settings.config["settings"]["storymode"]:
+        # Check and create missing audio files for storymode
+        title_mp3_path = f"assets/temp/{reddit_id}/mp3/title.mp3"
+        if not exists(title_mp3_path):
+            print_substep(f"Creating fallback audio for missing title.mp3")
+            create_silent_audio(title_mp3_path, 2.0)
+        
         if settings.config["settings"]["storymodemethod"] == 0:
-            audio_clips = [ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3")]
-            audio_clips.insert(1, ffmpeg.input(f"assets/temp/{reddit_id}/mp3/postaudio.mp3"))
+            postaudio_path = f"assets/temp/{reddit_id}/mp3/postaudio.mp3"
+            if not exists(postaudio_path):
+                print_substep(f"Creating fallback audio for missing postaudio.mp3")
+                create_silent_audio(postaudio_path, max(1.0, length - 2.0))
+            
+            audio_clips = [ffmpeg.input(title_mp3_path)]
+            audio_clips.insert(1, ffmpeg.input(postaudio_path))
         elif settings.config["settings"]["storymodemethod"] == 1:
+            # Ensure all postaudio files exist
+            for i in range(number_of_clips + 1):
+                postaudio_path = f"assets/temp/{reddit_id}/mp3/postaudio-{i}.mp3"
+                if not exists(postaudio_path):
+                    print_substep(f"Creating fallback audio for missing postaudio-{i}.mp3")
+                    create_silent_audio(postaudio_path, 1.0)
+            
             audio_clips = [
                 ffmpeg.input(f"assets/temp/{reddit_id}/mp3/postaudio-{i}.mp3")
                 for i in track(range(number_of_clips + 1), "Collecting the audio files...")
             ]
-            audio_clips.insert(0, ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3"))
-
+            audio_clips.insert(0, ffmpeg.input(title_mp3_path))
     else:
+        # Check and create missing audio files for regular mode
+        title_mp3_path = f"assets/temp/{reddit_id}/mp3/title.mp3"
+        if not exists(title_mp3_path):
+            print_substep(f"Creating fallback audio for missing title.mp3")
+            create_silent_audio(title_mp3_path, 2.0)
+        
+        for i in range(number_of_clips):
+            comment_path = f"assets/temp/{reddit_id}/mp3/{i}.mp3"
+            if not exists(comment_path):
+                print_substep(f"Creating fallback audio for missing {i}.mp3")
+                create_silent_audio(comment_path, 1.0)
+        
         audio_clips = [
             ffmpeg.input(f"assets/temp/{reddit_id}/mp3/{i}.mp3") for i in range(number_of_clips)
         ]
-        audio_clips.insert(0, ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3"))
+        audio_clips.insert(0, ffmpeg.input(title_mp3_path))
 
         audio_clips_durations = [
-            float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/{i}.mp3")["format"]["duration"])
+            safe_get_audio_duration(f"assets/temp/{reddit_id}/mp3/{i}.mp3", 1.0)
             for i in range(number_of_clips)
         ]
         audio_clips_durations.insert(
             0,
-            float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/title.mp3")["format"]["duration"]),
+            safe_get_audio_duration(f"assets/temp/{reddit_id}/mp3/title.mp3", 2.0),
         )
-    audio_concat = ffmpeg.concat(*audio_clips, a=1, v=0)
-    ffmpeg.output(
-        audio_concat, f"assets/temp/{reddit_id}/audio.mp3", **{"b:a": "192k"}
-    ).overwrite_output().run(quiet=True)
+    
+    # Safely concatenate audio clips
+    try:
+        audio_concat = ffmpeg.concat(*audio_clips, a=1, v=0)
+        ffmpeg.output(
+            audio_concat, f"assets/temp/{reddit_id}/audio.mp3", **{"b:a": "192k"}
+        ).overwrite_output().run(quiet=True)
+    except Exception as e:
+        print_substep(f"Failed to concatenate audio clips: {e}")
+        # Create a fallback combined audio file
+        create_silent_audio(f"assets/temp/{reddit_id}/audio.mp3", max(10.0, length))
 
     console.log(f"[bold green] Video Will Be: {length} Seconds Long")
 
@@ -286,15 +354,14 @@ def make_final_video(
 
     current_time = 0
     if settings.config["settings"]["storymode"]:
+        # Use safe duration calculation for storymode
         audio_clips_durations = [
-            float(
-                ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/postaudio-{i}.mp3")["format"]["duration"]
-            )
+            safe_get_audio_duration(f"assets/temp/{reddit_id}/mp3/postaudio-{i}.mp3", 1.0)
             for i in range(number_of_clips)
         ]
         audio_clips_durations.insert(
             0,
-            float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/title.mp3")["format"]["duration"]),
+            safe_get_audio_duration(f"assets/temp/{reddit_id}/mp3/title.mp3", 2.0),
         )
         if settings.config["settings"]["storymodemethod"] == 0:
             image_clips.insert(
@@ -439,10 +506,28 @@ def make_final_video(
                 capture_stderr=False,
             )
         except ffmpeg.Error as e:
-            print(e.stderr.decode("utf8"))
-            exit(1)
+            print_substep(f"FFmpeg error during video rendering: {e.stderr.decode('utf8') if e.stderr else 'Unknown error'}")
+            print_substep("Attempting video creation with alternative settings...")
+            try:
+                # Try with more basic settings as fallback
+                ffmpeg.output(
+                    background_clip,
+                    final_audio,
+                    path,
+                    **{
+                        "c:v": "libx264",
+                        "preset": "fast",
+                        "crf": "23",
+                        "c:a": "aac",
+                        "b:a": "128k",
+                    },
+                ).overwrite_output().run(quiet=True)
+            except Exception as fallback_error:
+                print_substep(f"Fallback video creation also failed: {fallback_error}")
+                exit(1)
     old_percentage = pbar.n
     pbar.update(100 - old_percentage)
+    
     if allowOnlyTTSFolder:
         path = defaultPath + f"/OnlyTTS/{filename}"
         path = (
@@ -469,8 +554,23 @@ def make_final_video(
                     capture_stderr=False,
                 )
             except ffmpeg.Error as e:
-                print(e.stderr.decode("utf8"))
-                exit(1)
+                print_substep(f"FFmpeg error during OnlyTTS video rendering: {e.stderr.decode('utf8') if e.stderr else 'Unknown error'}")
+                try:
+                    # Try with basic settings as fallback
+                    ffmpeg.output(
+                        background_clip,
+                        audio,
+                        path,
+                        **{
+                            "c:v": "libx264",
+                            "preset": "fast",
+                            "crf": "23", 
+                            "c:a": "aac",
+                            "b:a": "128k",
+                        },
+                    ).overwrite_output().run(quiet=True)
+                except Exception as fallback_error:
+                    print_substep(f"Fallback OnlyTTS video creation also failed: {fallback_error}")
 
         old_percentage = pbar.n
         pbar.update(100 - old_percentage)
